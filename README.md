@@ -1,3 +1,21 @@
+### A branch of OpenNMT-py with the HCadam optimizer.
+
+This is normal OpenNMT-py. However, it also has the option of using the HCadam optimizer (https://github.com/KordingLab/hilbert-constrained-gradient-descent). 
+
+An example training script run would look like:
+```
+python train.py -data data/demo -save_model demo-model --optim hcadam --hcadam_ncorrs 1 --hcadam_fcl 1. --learning_rate 0.001
+```
+Note 3 changes: 
+
+ 1. We use the `hcadam` optim.
+ 2. We set `hcadam_fcl`. This is a hyperparameter that controls the strength of the function regularization on each step. Default = 0.5.
+ 3. We set `hcadam_ncorrs`. This hyperparameter controls the number of corrective steps taken after an Adam step. The default is 1. Multiple steps can improve generalization, but since each step involves a full function call, more steps significantly slow optimization.
+
+When using, I suggest first trying a search over `hcadam_fcl` and `learning_rate` with `hcadam_ncorrs` set to 1. 
+
+Original OpenNMT-py docs:
+
 # OpenNMT-py: Open-Source Neural Machine Translation
 
 [![Build Status](https://travis-ci.org/OpenNMT/OpenNMT-py.svg?branch=master)](https://travis-ci.org/OpenNMT/OpenNMT-py)
