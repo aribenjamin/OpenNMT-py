@@ -57,6 +57,8 @@ def build_trainer(opt, device_id, model, fields, optim, model_saver=None):
         opt.early_stopping, scorers=onmt.utils.scorers_from_opts(opt)) \
         if opt.early_stopping > 0 else None
 
+    hilbert_corrected = True if opt.optim == 'hcadam' else False
+
     report_manager = onmt.utils.build_report_manager(opt)
     trainer = onmt.Trainer(model, train_loss, valid_loss, optim, trunc_size,
                            shard_size, norm_method,
@@ -67,7 +69,8 @@ def build_trainer(opt, device_id, model, fields, optim, model_saver=None):
                            average_decay=average_decay,
                            average_every=average_every,
                            model_dtype=opt.model_dtype,
-                           earlystopper=earlystopper)
+                           earlystopper=earlystopper,
+                           hilbert_corrected = hilbert_corrected)
     return trainer
 
 
@@ -95,6 +98,7 @@ class Trainer(object):
             model_saver(:obj:`onmt.models.ModelSaverBase`): the saver is
                 used to save a checkpoint.
                 Thus nothing will be saved if this parameter is None
+            hilbert_corrected (bool): whether to feed an eval closure to the optimizer
     """
 
     def __init__(self, model, train_loss, valid_loss, optim,
@@ -104,7 +108,7 @@ class Trainer(object):
                  n_gpu=1, gpu_rank=1,
                  gpu_verbose_level=0, report_manager=None, model_saver=None,
                  average_decay=0, average_every=1, model_dtype='fp32',
-                 earlystopper=None):
+                 earlystopper=None, hilbert_corrected = False):
         # Basic attributes.
         self.model = model
         self.train_loss = train_loss
@@ -126,6 +130,7 @@ class Trainer(object):
         self.average_every = average_every
         self.model_dtype = model_dtype
         self.earlystopper = earlystopper
+        self.hilbert_corrected = hilbert_corrected
 
         for i in range(len(self.accum_count_l)):
             assert self.accum_count_l[i] > 0
@@ -133,6 +138,9 @@ class Trainer(object):
                 assert self.trunc_size == 0, \
                     """To enable accumulated gradients,
                        you must disable target sequence truncating."""
+                assert not hilbert_corrected, \
+                    """Accumulating gradients while using an optimizer in the hilbert-correction
+                        family hasn't been implemented yet."""
 
         # Set model in training mode.
         self.model.train()
@@ -182,7 +190,8 @@ class Trainer(object):
               train_steps,
               save_checkpoint_steps=5000,
               valid_iter=None,
-              valid_steps=10000):
+              valid_steps=10000,
+              train_iter2 = None):
         """
         The main training loop by iterating over `train_iter` and possibly
         running validation on `valid_iter`.
@@ -212,8 +221,19 @@ class Trainer(object):
             train_iter = itertools.islice(
                 train_iter, self.gpu_rank, None, self.n_gpu)
 
-        for i, (batches, normalization) in enumerate(
-                self._accum_batches(train_iter)):
+        if train_iter2 is not None:
+            iterator = enumerate(zip(
+                self._accum_batches(train_iter),
+                self._accum_batches(train_iter2)))
+        else:
+            iterator = enumerate(self._accum_batches(train_iter))
+
+        for i, this_data in iterator:
+            if train_iter2 is not None:
+                (batches, normalization), (batches2, normalization2) = this_data
+            else:
+                (batches, normalization), (batches2, normalization2) = this_data, (None, None)
+
             step = self.optim.training_step
 
             if self.gpu_verbose_level > 1:
@@ -230,7 +250,7 @@ class Trainer(object):
 
             self._gradient_accumulation(
                 batches, normalization, total_stats,
-                report_stats)
+                report_stats, batches2, normalization2)
 
             if self.average_decay > 0 and i % self.average_every == 0:
                 self._update_average(step)
@@ -318,11 +338,30 @@ class Trainer(object):
         return stats
 
     def _gradient_accumulation(self, true_batches, normalization, total_stats,
-                               report_stats):
+                               report_stats, batches2 = None, normalization2 = None):
         if self.accum_count > 1:
             self.optim.zero_grad()
 
-        for k, batch in enumerate(true_batches):
+        if batches2 is not None:
+            iterator = enumerate(zip(true_batches, batches2))
+        else:
+            iterator = enumerate(true_batches)
+
+        for k, this_data in iterator:
+            if batches2 is not None:
+                batch, batch2 = this_data
+            else:
+                batch, batch2 = this_data, None
+
+            #make sure train data was shuffled
+            assert batch is not batch2
+
+            src2, src_lengths2 = batch2.src if isinstance(batch2.src, tuple) \
+                else (batch2.src, None)
+            if src_lengths2 is not None:
+                report_stats.n_src_words += src_lengths2.sum().item()
+            tgt2 = batch2.tgt
+
             target_size = batch.tgt.size(0)
             # Truncated BPTT: reminder not compatible with accum > 1
             if self.trunc_size:
@@ -379,7 +418,18 @@ class Trainer(object):
                                  and p.grad is not None]
                         onmt.utils.distributed.all_reduce_and_rescale_tensors(
                             grads, float(1))
-                    self.optim.step()
+
+                    # If using HCAdam as an optimizer...
+                    if self.hilbert_corrected:
+                        def validation_eval():
+                            # need to detach state
+                            if self.model.decoder.state is not None:
+                                self.model.decoder.detach_state()
+                            out, _ = self.model(src2, tgt2, src_lengths2, bptt=bptt)
+                            return out
+                        self.optim.step(validation_eval)
+                    else:
+                        self.optim.step()
 
                 # If truncated, don't backprop fully.
                 # TO CHECK

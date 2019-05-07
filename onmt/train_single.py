@@ -99,6 +99,7 @@ def main(opt, device_id):
         opt, device_id, model, fields, optim, model_saver=model_saver)
 
     train_iter = build_dataset_iter("train", fields, opt)
+    train_iter2 = build_dataset_iter("train", fields, opt)
     valid_iter = build_dataset_iter(
         "valid", fields, opt, is_train=False)
 
@@ -115,7 +116,8 @@ def main(opt, device_id):
         train_steps,
         save_checkpoint_steps=opt.save_checkpoint_steps,
         valid_iter=valid_iter,
-        valid_steps=opt.valid_steps)
+        valid_steps=opt.valid_steps,
+        train_iter2 = train_iter2)
 
     if opt.tensorboard:
         trainer.report_manager.tensorboard_writer.close()

@@ -414,7 +414,7 @@ def train_opts(parser):
               nargs="*", default=None,
               help='Criteria to use for early stopping.')
     group.add('--optim', '-optim', default='sgd',
-              choices=['sgd', 'adagrad', 'adadelta', 'adam',
+              choices=['sgd', 'adagrad', 'adadelta', 'adam','hcadam',
                        'sparseadam', 'adafactor', 'fusedadam'],
               help="Optimization method.")
     group.add('--adagrad_accumulator_init', '-adagrad_accumulator_init',
@@ -436,6 +436,11 @@ def train_opts(parser):
                    "the literature, seemingly giving good results, "
                    "so we would discourage changing this value from "
                    "the default without due consideration.")
+    group.add('--hcadam_ncorrs', type=int, default=1,
+              help="""The number of corrections done by the HCADAM optimizer. Increasing gives better 
+                   performance, but at significant computational time. Usually saturates by 10.""")
+    group.add('--hcadam_fcl', type=float, default=.5,
+              help="""The 'function change limiter' hyperparameter for HCADAM. Try increasing until optimization breaks.""")
     group.add('--adam_beta2', '-adam_beta2', type=float, default=0.999,
               help='The beta2 parameter used by Adam. '
                    'Typically a value of 0.999 is recommended, as this is '
